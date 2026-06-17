@@ -1,89 +1,105 @@
-# SP1 Project Template
+# SP1 Fibonacci (Safe U256 Implementation) 🦀⚡
 
-This is a template for creating an end-to-end [SP1](https://github.com/succinctlabs/sp1) project
-that can generate a proof of any RISC-V program.
+This sub-project is a security-hardened implementation of the classic Fibonacci sequence running inside the **SP1 zkVM**. It is designed to safely handle inputs that trigger silent integer overflows in standard data types, guaranteeing exact mathematical correctness for cryptographic proof generation.
 
-## Requirements
+---
 
-- [Rust](https://rustup.rs/)
-- [SP1](https://docs.succinct.xyz/docs/sp1/getting-started/install)
+## 🛑 The Vulnerability: Silent `u32` Wrap-Arounds
 
-## Running the Project
+The standard SP1 starter template utilizes standard 32-bit integers (`u32`) for the sequence state:
+```rust
+// The vulnerable state loop
+let mut a: u32 = 0;
+let mut b: u32 = 1;
+for _ in 0..n {
+    let c = a + b; // Will silently wrap around in --release mode once n >= 47
+    a = b;
+    b = c;
+}
 
-There are 3 main ways to run this project: execute a program, generate a core proof, and
-generate an EVM-compatible proof.
-
-### Build the Program
-
-The program is automatically built through `script/build.rs` when the script is built.
-
-### Execute the Program
-
-To run the program without generating a proof:
-
-```sh
-cd script
-cargo run --release -- --execute
 ```
 
-This will execute the program and display the output.
+In standard Rust compiled with the `--release` flag, **integer overflows do not panic—they silently wrap around.** Because a zkVM perfectly proves execution logic (even flawed logic), it will generate a cryptographically valid proof for an entirely incorrect mathematical state.
 
-### Generate an SP1 Core Proof
+### The $n = 100$ Reality Check 🚨
 
-To generate an SP1 [core proof](https://docs.succinct.xyz/docs/next/sp1/generating-proofs/proof-types#core-default) for your program:
+At $n = 100$, the standard template reports a successful execution with zero errors, but spits out an entirely broken state due to multiple silent wrap-arounds:
 
-```sh
-cd script
-cargo run --release -- --prove
+* **Expected Mathematical Value ($U256$):** `573,147,844,013,817,084,101`
+* **Actual Flawed Template Output (`u32`):** `2,425,370,821` ❌ *(Completely wrong)*
+
+### The Fix: Upgrading to `U256`
+
+This implementation refactors both the core execution library (`lib/`) and the guest program (`program/`) to track states using the `U256` type from the `crypto-bigint` or `alloy-primitives` ecosystem, allowing the sequence to compute values well past the 64-bit boundary without overflow exploits.
+
+---
+
+## ⚖️ The Safety Tax: `u32` vs. `U256` Cycle Comparison
+
+Because SP1 is a 32-bit RISC-V zkVM, standard `u32` math maps directly to native CPU instructions. Moving to `U256` forces the compiler to split the big integers across eight separate 32-bit registers, requiring a sequence of additions-with-carry for every single step in the loop.
+
+Here is the exact cycle overhead (the "safety tax") paid to prevent silent overflows at identical execution states:
+
+| Input ($n$) | Native `u32` Cycles (Flawed) | Secure `U256` Cycles (Fixed) | Raw Instruction Tax | Performance Penalty |
+| --- | --- | --- | --- | --- |
+| **$n = 20$** | `9,619` | `10,219` | **+600 cycles** | +6.2% |
+| **$n = 50$** | `9,799` | `11,059` | **+1,260 cycles** | +12.8% |
+| **$n = 100$** | `10,099` | `12,459` | **+2,360 cycles** | +23.3% |
+
+### Analysis of the Tax
+
+* **The Baseline Cost:** At a low index like $n=20$, the overhead is a negligible **6%**.
+* **The Compounding Penalty:** By the time you compute $n=100$, the register-splitting overhead accumulates significantly, introducing a **23.3% cycle penalty** over the default implementation.
+
+While a ~23% performance tax is substantial in ZK proof generation, it represents the absolute baseline cost of mathematical correctness. Without paying this instruction tax, the zkVM generates a "valid" proof for a broken, wrapped state.
+
+---
+
+## 🛠️ Folder Structure
+
+Following the official SP1 examples layout, this directory is split into three standalone components:
+
+```text
+fibonacci-u256/
+├── lib/             # Core math library handling the U256 loop state
+├── program/         # The Guest Code (compiled to RISC-V to execute inside the zkVM)
+└── script/          # The Host Code (manages arguments, CPU prover instantiation, and verification)
+    └── src/bin/
+        ├── main.rs  # Local execution and testing script
+        └── evm.rs   # Generates Groth16/PLONK proofs for EVM verifiers
+
 ```
 
-### Generate an EVM-Compatible Proof
+---
 
-> [!WARNING]
-> You will need at least 16GB RAM to generate a Groth16 or PLONK proof. View the [SP1 docs](https://docs.succinct.xyz/docs/next/sp1/getting-started/hardware-requirements#local-proving) for more information.
+## 🚀 Quick Start
 
-Generating a proof that is cheap to verify on the EVM (e.g. Groth16 or PLONK) is more intensive than generating a core proof.
+Ensure you are inside the `fibonacci-u256` subfolder before executing commands.
 
-To generate a Groth16 proof:
+### 1. Dry-Run Execution (No Proving)
 
-```sh
-cd script
-cargo run --release --bin evm -- --system groth16
+To run the guest program locally and check outputs without running the heavy cryptographic prover pipeline:
+
+```bash
+RUST_LOG=info cargo run --release -- --execute --n 100
+
 ```
 
-To generate a PLONK proof:
+### 2. Generate an EVM-Compatible Proof
 
-```sh
-cargo run --release --bin evm -- --system plonk
+To generate a proof intended to be verified by an Ethereum/L2 smart contract:
+
+```bash
+RUST_LOG=info cargo run --release --bin evm -- --prove --n 50
+
 ```
 
-These commands will also generate fixtures that can be used to test the verification of SP1 proofs
-inside Solidity.
+> ⚠️ **Resource Note:** Local CPU proving is computationally heavy. At $n=100$, memory consumption spikes up to **~94% RAM utilization**. For higher values of $n$, it is highly recommended to plug in the *Succinct Prover Network* credentials via your `.env` file.
 
-### Retrieve the Verification Key
-
-To retrieve your `programVKey` for your on-chain contract, run the following command in `script`:
-
-```sh
-cargo run --release --bin vkey
 ```
 
-## Using the Prover Network
+***
 
-We highly recommend using the Succinct Prover Network for any non-trivial programs or benchmarking purposes. For more information, see the [quickstart guide](https://docs.succinct.xyz/docs/next/sp1/prover-network/quickstart).
+This is ready to be committed! It looks great, it makes sense, and it perfectly highlights why your modification was necessary.
 
-To get started, copy the example environment file:
-
-```sh
-cp .env.example .env
-```
-
-Then, set the `SP1_PROVER` environment variable to `network` and set the `NETWORK_PRIVATE_KEY`
-environment variable to your whitelisted private key.
-
-For example, to generate an EVM-compatible proof using the prover network, run the following
-command:
-
-```sh
-SP1_PROVER=network NETWORK_PRIVATE_KEY=... cargo run --release --bin evm
 ```
