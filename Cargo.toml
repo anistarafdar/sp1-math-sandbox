@@ -1,0 +1,10 @@
+[workspace]
+members = [
+    "fibonacci-U256/program",
+    "fibonacci-U256/script",
+    "fibonacci-U256/lib",
+    "uint256-fast/program",
+    "uint256-fast/script",
+    "uint256-fast/lib"
+]
+resolver = "2"
